@@ -174,7 +174,7 @@ export default class TerminalTabToWindowExtension extends Extension {
     if (!entry.supported) {
       this._notify(
         _('Detach not available'),
-        _('%s cannot detach a tab programmatically. Use its own tab menu or drag the tab out.').format(entry.label));
+        _('%s cannot detach a tab programmatically. Use its own tab menu or drag the tab out.').replace('%s', entry.label));
       return;
     }
 
@@ -272,7 +272,7 @@ export default class TerminalTabToWindowExtension extends Extension {
     if (!settings) {
       this._notify(
         _('Detach unavailable'),
-        _('%s is not installed or exposes no detach shortcut setting.').format(entry.label));
+        _('%s is not installed or exposes no detach shortcut setting.').replace('%s', entry.label));
       return;
     }
 
