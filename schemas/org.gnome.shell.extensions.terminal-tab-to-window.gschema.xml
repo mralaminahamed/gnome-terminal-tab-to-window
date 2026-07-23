@@ -7,8 +7,17 @@
       <default>["&lt;Super&gt;&lt;Shift&gt;w"]</default>
       <summary>Move terminal tab to new window</summary>
       <description>
-        Global keyboard shortcut to detach the active GNOME Terminal tab into
-        its own window. Press while GNOME Terminal is the focused application.
+        Global keyboard shortcut to detach the active terminal tab into its own
+        window. Press while a supported terminal is the focused application.
+      </description>
+    </key>
+
+    <key name="debug-logging" type="b">
+      <default>false</default>
+      <summary>Enable verbose logging</summary>
+      <description>
+        When on, the extension logs detailed diagnostics to the GNOME Shell
+        journal. Leave off for normal use.
       </description>
     </key>
 

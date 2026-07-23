@@ -1,23 +1,22 @@
 /**
  * Terminal Tab to New Window — GNOME Shell Extension
  *
- * Adds a global keyboard shortcut (default: Super+Shift+W) that detaches
- * the active GNOME Terminal tab into its own window.
+ * Adds a global keyboard shortcut (default: Super+Shift+W) that detaches the
+ * active terminal tab into its own window, adaptively across supported
+ * terminals.
  *
- * Mechanism
- * ---------
- * GNOME Terminal has no public plugin API, so the extension works in two
- * co-operating steps:
+ * Supported terminals
+ * -------------------
+ *  - GNOME Terminal  → triggered directly via its D-Bus window action
+ *    `tab-detach` (org.gtk.Actions). No keybinding is touched. Falls back to
+ *    keystroke injection if D-Bus is unavailable.
+ *  - Ptyxis          → its detach action is not exported on D-Bus, so the
+ *    extension sets the terminal's own `detach-tab` shortcut (saving/restoring
+ *    the previous value) and injects it via a Clutter VirtualInputDevice.
  *
- *  1. On enable(), it writes a low-conflict internal shortcut
- *     (Ctrl+Shift+Alt+D) into GNOME Terminal's own GSettings keybindings
- *     for the "detach-tab" action. The previous value is saved and restored
- *     on disable().
- *
- *  2. When the user presses the global shortcut (Super+Shift+W) while
- *     GNOME Terminal is focused, the extension injects that internal
- *     shortcut via a Clutter VirtualInputDevice — which works on both
- *     Wayland and X11 because it goes through the compositor.
+ * GNOME Console and Tilix are recognised but cannot be detached from outside
+ * the process (no accelerator, settable shortcut, or reachable action), so the
+ * extension shows an explanatory notification instead of failing silently.
  *
  * Requires: GNOME Shell 45+ (Ubuntu 23.10 / 24.04+)
  * For GNOME Shell 42 (Ubuntu 22.04) use extension-gnome42.js instead.
@@ -26,7 +25,7 @@
  * @version 1.0.0
  */
 
-import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import Clutter from 'gi://Clutter';
@@ -37,64 +36,114 @@ import Shell  from 'gi://Shell';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/** GSettings schema + key used to configure GNOME Terminal's own shortcut. */
-const TERMINAL_KEYBINDING_SCHEMA = 'org.gnome.Terminal.Legacy.Keybindings';
-const TERMINAL_DETACH_ACTION_KEY = 'detach-tab';
-
-/**
- * Internal shortcut injected into GNOME Terminal.
- * Chosen to be highly unlikely to collide with anything else.
- */
+/** Internal accelerator injected into inject-based terminals (Ctrl+Shift+Alt+D). */
 const INTERNAL_SHORTCUT_GSETTINGS = '<Primary><Shift><Alt>d';
 
-// Clutter key values for the internal shortcut (Ctrl+Shift+Alt+D)
-const INTERNAL_MODIFIERS = [
-  Clutter.KEY_Control_L,
-  Clutter.KEY_Shift_L,
-  Clutter.KEY_Alt_L,
+/** Adaptive delays (ms): each attempt re-checks focus before injecting once. */
+const INJECT_RETRY_DELAYS = [50, 120, 250];
+
+/** Timeout (ms) for the D-Bus List/Activate calls. */
+const DBUS_TIMEOUT_MS = 1000;
+
+/** Modifier name → Clutter keyval, for parsing GSettings accelerator strings. */
+const MODIFIER_KEYVALS = {
+  primary: Clutter.KEY_Control_L,
+  control: Clutter.KEY_Control_L,
+  ctrl:    Clutter.KEY_Control_L,
+  shift:   Clutter.KEY_Shift_L,
+  alt:     Clutter.KEY_Alt_L,
+  mod1:    Clutter.KEY_Alt_L,
+  super:   Clutter.KEY_Super_L,
+  meta:    Clutter.KEY_Meta_L,
+  hyper:   Clutter.KEY_Hyper_L,
+};
+
+/** Returns the GTK application-id of a window, or null. */
+function appId(win) {
+  try {
+    return win.get_gtk_application_id?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns the lower-cased WM_CLASS of a window, or ''. */
+function wmClass(win) {
+  try {
+    return (win.get_wm_class() ?? '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Terminal registry. Ordered — the first matching entry wins.
+ *  - mechanism 'dbus'   : trigger `dbusAction` via org.gtk.Actions (inject fallback).
+ *  - mechanism 'inject' : set `schema`/`key` shortcut and inject it.
+ *  - supported false    : recognised but not programmatically detachable.
+ */
+const TERMINALS = [
+  {
+    id: 'gnome-terminal',
+    label: 'GNOME Terminal',
+    supported: true,
+    mechanism: 'dbus',
+    dbusAction: 'tab-detach',
+    // Inject fallback if D-Bus is unavailable:
+    schema: 'org.gnome.Terminal.Legacy.Keybindings',
+    key: 'detach-tab',
+    match: win => wmClass(win).includes('gnome-terminal'),
+  },
+  {
+    id: 'ptyxis',
+    label: 'Ptyxis',
+    supported: true,
+    mechanism: 'inject',
+    schema: 'org.gnome.Ptyxis.Shortcuts',
+    key: 'detach-tab',
+    match: win => appId(win) === 'org.gnome.Ptyxis',
+  },
+  {
+    id: 'console',
+    label: 'GNOME Console',
+    supported: false,
+    match: win => appId(win) === 'org.gnome.Console',
+  },
+  {
+    id: 'tilix',
+    label: 'Tilix',
+    supported: false,
+    match: win => appId(win) === 'com.gexperts.Tilix',
+  },
 ];
-const INTERNAL_KEY = Clutter.KEY_d;
-
-/** WM_CLASS substrings that identify a GNOME Terminal window. */
-const TERMINAL_WM_CLASSES = ['gnome-terminal-server', 'gnome-terminal'];
-
-/** Delay (ms) between the global keybinding firing and injecting the keys.
- *  Gives GNOME Shell time to finish processing its own shortcut. */
-const INJECTION_DELAY_MS = 80;
 
 // ── Extension class ──────────────────────────────────────────────────────────
 
 export default class TerminalTabToWindowExtension extends Extension {
-  /**
-   * Called when the extension is enabled (login, re-enable, or shell restart).
-   */
   enable() {
     this._settings = this.getSettings();
     this._virtualKeyboard = null;
     this._pendingTimeouts = new Set();
-    this._savedDetachShortcut = null; // previous terminal detach-tab value
-
-    this._configureTerminalInternalShortcut();
+    this._savedShortcuts = new Map(); // "schema:key" → previous accel string
 
     Main.wm.addKeybinding(
       'move-terminal-tab-shortcut',
       this._settings,
       Meta.KeyBindingFlags.NONE,
       Shell.ActionMode.NORMAL,
-      () => this._onGlobalShortcutActivated(),
+      () => {
+        this._onGlobalShortcutActivated().catch(
+          e => this._log(`dispatch error: ${e.message}`));
+      },
     );
 
-    console.debug('[TerminalTabToWindow] Enabled — shortcut registered.');
+    this._probeInstalledTerminals();
+    this._log('Enabled — shortcut registered.');
   }
 
-  /**
-   * Called when the extension is disabled (logout, disable, or shell restart).
-   * Must release every resource acquired in enable().
-   */
   disable() {
     Main.wm.removeKeybinding('move-terminal-tab-shortcut');
 
-    // Cancel any pending injection timeouts scheduled but not yet fired.
     if (this._pendingTimeouts) {
       for (const id of this._pendingTimeouts)
         GLib.Source.remove(id);
@@ -102,139 +151,284 @@ export default class TerminalTabToWindowExtension extends Extension {
     }
     this._pendingTimeouts = null;
 
-    // Restore GNOME Terminal's detach-tab keybinding to what it was before.
-    this._restoreTerminalInternalShortcut();
+    this._restoreSavedShortcuts();
 
     this._virtualKeyboard = null;
     this._settings = null;
 
-    console.debug('[TerminalTabToWindow] Disabled.');
+    this._logDirect('Disabled.');
   }
 
-  // ── Private helpers ────────────────────────────────────────────────────────
+  // ── Dispatch ────────────────────────────────────────────────────────────────
 
-  /**
-   * Writes the internal shortcut (Ctrl+Shift+Alt+D) into GNOME Terminal's
-   * own GSettings so that the terminal application will recognise and act on
-   * it when the virtual keyboard injects it. Saves the prior value in
-   * this._savedDetachShortcut so disable() can restore it.
-   *
-   * Fails gracefully if the schema or key does not exist (older/newer
-   * Terminal versions that renamed or removed the key).
-   */
-  _configureTerminalInternalShortcut() {
-    try {
-      const schemaSource = Gio.SettingsSchemaSource.get_default();
-      const schema = schemaSource.lookup(TERMINAL_KEYBINDING_SCHEMA, /* recursive */ true);
+  async _onGlobalShortcutActivated() {
+    const win = global.display.focus_window;
+    if (!win) return;
 
-      if (!schema) {
-        console.warn('[TerminalTabToWindow] GNOME Terminal keybinding schema not found — is gnome-terminal installed?');
-        return;
-      }
-
-      if (!schema.has_key(TERMINAL_DETACH_ACTION_KEY)) {
-        console.warn(`[TerminalTabToWindow] Key "${TERMINAL_DETACH_ACTION_KEY}" missing from schema — GNOME Terminal version may not support detach-tab shortcut.`);
-        return;
-      }
-
-      const termSettings = new Gio.Settings({ schema_id: TERMINAL_KEYBINDING_SCHEMA });
-      this._savedDetachShortcut = termSettings.get_string(TERMINAL_DETACH_ACTION_KEY);
-      termSettings.set_string(TERMINAL_DETACH_ACTION_KEY, INTERNAL_SHORTCUT_GSETTINGS);
-      console.debug(`[TerminalTabToWindow] Set terminal internal shortcut → ${INTERNAL_SHORTCUT_GSETTINGS}`);
-    } catch (e) {
-      console.error(`[TerminalTabToWindow] Error configuring terminal shortcut: ${e.message}`);
-    }
-  }
-
-  /**
-   * Restores GNOME Terminal's detach-tab keybinding to the value captured in
-   * _configureTerminalInternalShortcut(). No-op if nothing was saved.
-   */
-  _restoreTerminalInternalShortcut() {
-    if (this._savedDetachShortcut === null) return;
-    try {
-      const termSettings = new Gio.Settings({ schema_id: TERMINAL_KEYBINDING_SCHEMA });
-      termSettings.set_string(TERMINAL_DETACH_ACTION_KEY, this._savedDetachShortcut);
-      console.debug(`[TerminalTabToWindow] Restored terminal detach-tab → ${this._savedDetachShortcut}`);
-    } catch (e) {
-      console.error(`[TerminalTabToWindow] Error restoring terminal shortcut: ${e.message}`);
-    } finally {
-      this._savedDetachShortcut = null;
-    }
-  }
-
-  /**
-   * Returns true when the currently focused window is a GNOME Terminal.
-   */
-  _isTerminalFocused() {
-    const focusedWindow = global.display.focus_window;
-    if (!focusedWindow) return false;
-    const wmClass = (focusedWindow.get_wm_class() ?? '').toLowerCase();
-    return TERMINAL_WM_CLASSES.some(c => wmClass.includes(c));
-  }
-
-  /**
-   * Handler called by GNOME Shell when the user presses the global shortcut.
-   * Guards against non-terminal windows before scheduling key injection.
-   */
-  _onGlobalShortcutActivated() {
-    if (!this._isTerminalFocused()) {
-      // Silently ignore — the user pressed the shortcut in another app.
+    const entry = this._matchStrategy(win);
+    if (!entry) {
+      this._log('Focused window is not a known terminal — ignoring.');
       return;
     }
 
-    // Schedule injection after a short delay so GNOME Shell has finished
-    // processing the keybinding event before we inject new ones. The source
-    // id is tracked so disable() can cancel it if teardown happens first.
-    const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, INJECTION_DELAY_MS, () => {
+    if (!entry.supported) {
+      this._notify(
+        _('Detach not available'),
+        _('%s cannot detach a tab programmatically. Use its own tab menu or drag the tab out.').format(entry.label));
+      return;
+    }
+
+    if (entry.mechanism === 'dbus') {
+      const ok = await this._dbusDetach(win, entry);
+      if (ok) return;
+      this._log('D-Bus detach unavailable — falling back to key injection.');
+    }
+
+    this._injectDetach(entry);
+  }
+
+  _matchStrategy(win) {
+    for (const t of TERMINALS) {
+      try {
+        if (t.match(win)) return t;
+      } catch {
+        // A getter may be missing on some windows — skip this entry.
+      }
+    }
+    return null;
+  }
+
+  _isFocused(entry) {
+    const win = global.display.focus_window;
+    if (!win) return false;
+    try {
+      return entry.match(win);
+    } catch {
+      return false;
+    }
+  }
+
+  // ── D-Bus mechanism (GNOME Terminal) ─────────────────────────────────────────
+
+  /**
+   * Activates the window's `dbusAction` via org.gtk.Actions. Resolves true on
+   * success, false if the window exposes no D-Bus actions or the call fails.
+   */
+  _dbusDetach(win, entry) {
+    return new Promise(resolve => {
+      let busName, objPath;
+      try {
+        busName = win.get_gtk_unique_bus_name?.();
+        objPath = win.get_gtk_window_object_path?.();
+      } catch {
+        resolve(false);
+        return;
+      }
+      if (!busName || !objPath) {
+        resolve(false);
+        return;
+      }
+
+      const conn = Gio.DBus.session;
+      conn.call(
+        busName, objPath, 'org.gtk.Actions', 'List', null,
+        new GLib.VariantType('(as)'), Gio.DBusCallFlags.NONE, DBUS_TIMEOUT_MS, null,
+        (c, res) => {
+          let actions;
+          try {
+            [actions] = c.call_finish(res).deepUnpack();
+          } catch (e) {
+            this._log(`org.gtk.Actions.List failed: ${e.message}`);
+            resolve(false);
+            return;
+          }
+          if (!actions.includes(entry.dbusAction)) {
+            this._log(`Window does not export action "${entry.dbusAction}".`);
+            resolve(false);
+            return;
+          }
+          conn.call(
+            busName, objPath, 'org.gtk.Actions', 'Activate',
+            new GLib.Variant('(sava{sv})', [entry.dbusAction, [], {}]),
+            null, Gio.DBusCallFlags.NONE, DBUS_TIMEOUT_MS, null,
+            (c2, res2) => {
+              try {
+                c2.call_finish(res2);
+                this._log(`Detached via D-Bus action "${entry.dbusAction}".`);
+                resolve(true);
+              } catch (e) {
+                this._log(`org.gtk.Actions.Activate failed: ${e.message}`);
+                resolve(false);
+              }
+            });
+        });
+    });
+  }
+
+  // ── Inject mechanism (Ptyxis, GNOME Terminal fallback) ───────────────────────
+
+  _injectDetach(entry) {
+    const settings = this._terminalSettings(entry);
+    if (!settings) {
+      this._notify(
+        _('Detach unavailable'),
+        _('%s is not installed or exposes no detach shortcut setting.').format(entry.label));
+      return;
+    }
+
+    const current = settings.get_string(entry.key);
+    let accel;
+    if (current && current !== 'disabled' && current !== '') {
+      // The user already bound a shortcut — reuse it, mutate nothing.
+      accel = current;
+    } else {
+      // No shortcut set — set ours, remembering the previous value to restore.
+      const mapKey = `${entry.schema}:${entry.key}`;
+      if (!this._savedShortcuts.has(mapKey))
+        this._savedShortcuts.set(mapKey, current);
+      settings.set_string(entry.key, INTERNAL_SHORTCUT_GSETTINGS);
+      accel = INTERNAL_SHORTCUT_GSETTINGS;
+    }
+
+    const keyvals = this._accelToKeyvals(accel);
+    if (!keyvals) {
+      this._log(`Cannot parse accelerator "${accel}" for injection.`);
+      return;
+    }
+    this._scheduleInject(entry, keyvals, 0);
+  }
+
+  /**
+   * Waits, re-checks focus, and injects exactly once when the terminal is still
+   * focused. If focus has not settled, retries the wait (never re-injecting, to
+   * avoid detaching more than one tab).
+   */
+  _scheduleInject(entry, keyvals, attempt) {
+    if (attempt >= INJECT_RETRY_DELAYS.length) {
+      this._log('Injection aborted — terminal never regained focus.');
+      return;
+    }
+    const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, INJECT_RETRY_DELAYS[attempt], () => {
       this._pendingTimeouts?.delete(id);
-      this._injectDetachShortcut();
+      if (!this._isFocused(entry)) {
+        this._scheduleInject(entry, keyvals, attempt + 1);
+        return GLib.SOURCE_REMOVE;
+      }
+      try {
+        this._injectKeyvals(keyvals);
+        this._log(`Injected detach shortcut into ${entry.label}.`);
+      } catch (e) {
+        this._log(`Injection failed: ${e.message}`);
+      }
       return GLib.SOURCE_REMOVE;
     });
     this._pendingTimeouts.add(id);
   }
 
-  /**
-   * Injects Ctrl+Shift+Alt+D into the focused window via a Wayland-compatible
-   * Clutter VirtualInputDevice.  The sequence: press all modifiers, press the
-   * key, then release in reverse order.
-   *
-   * Re-checks focus immediately before injecting: the 80ms delay means the
-   * user could have switched windows since the shortcut fired, and we must
-   * not deliver synthetic keys to another application.
-   */
-  _injectDetachShortcut() {
-    if (!this._isTerminalFocused()) return;
-
-    try {
-      const seat = Clutter.get_default_backend().get_default_seat();
-
-      // Lazily create the virtual keyboard device once per enable() cycle.
-      if (!this._virtualKeyboard) {
-        this._virtualKeyboard = seat.create_virtual_device(
-          Clutter.InputDeviceType.KEYBOARD_DEVICE,
-        );
-      }
-
-      const kbd = this._virtualKeyboard;
-      // GLib.get_monotonic_time() returns microseconds — required by notify_keyval.
-      let t = GLib.get_monotonic_time();
-
-      // Press modifiers
-      for (const mod of INTERNAL_MODIFIERS) {
-        kbd.notify_keyval(t++, mod, Clutter.KeyState.PRESSED);
-      }
-
-      // Press + release the main key
-      kbd.notify_keyval(t++, INTERNAL_KEY, Clutter.KeyState.PRESSED);
-      kbd.notify_keyval(t++, INTERNAL_KEY, Clutter.KeyState.RELEASED);
-
-      // Release modifiers in reverse
-      for (const mod of [...INTERNAL_MODIFIERS].reverse()) {
-        kbd.notify_keyval(t++, mod, Clutter.KeyState.RELEASED);
-      }
-    } catch (e) {
-      console.error(`[TerminalTabToWindow] Failed to inject virtual key events: ${e.message}`);
+  _injectKeyvals(kv) {
+    const seat = Clutter.get_default_backend().get_default_seat();
+    if (!this._virtualKeyboard) {
+      this._virtualKeyboard = seat.create_virtual_device(
+        Clutter.InputDeviceType.KEYBOARD_DEVICE);
     }
+    const kbd = this._virtualKeyboard;
+    let t = GLib.get_monotonic_time(); // microseconds
+
+    for (const mod of kv.mods)
+      kbd.notify_keyval(t++, mod, Clutter.KeyState.PRESSED);
+    kbd.notify_keyval(t++, kv.key, Clutter.KeyState.PRESSED);
+    kbd.notify_keyval(t++, kv.key, Clutter.KeyState.RELEASED);
+    for (const mod of [...kv.mods].reverse())
+      kbd.notify_keyval(t++, mod, Clutter.KeyState.RELEASED);
+  }
+
+  /**
+   * Parses a GSettings accelerator like '<Primary><Shift><Alt>d' into Clutter
+   * keyvals. Returns { mods: number[], key: number } or null if unparseable.
+   */
+  _accelToKeyvals(accel) {
+    const mods = [];
+    const re = /<([^>]+)>/g;
+    let m;
+    let lastIndex = 0;
+    while ((m = re.exec(accel)) !== null) {
+      const keyval = MODIFIER_KEYVALS[m[1].toLowerCase()];
+      if (keyval === undefined) return null;
+      mods.push(keyval);
+      lastIndex = re.lastIndex;
+    }
+    const keyName = accel.slice(lastIndex).trim();
+    if (!keyName) return null;
+
+    const lookup = keyName.length === 1 ? keyName.toLowerCase() : keyName;
+    const key = Clutter[`KEY_${lookup}`];
+    if (key === undefined) return null;
+
+    return { mods, key };
+  }
+
+  // ── Settings helpers ─────────────────────────────────────────────────────────
+
+  /** Returns a Gio.Settings for the terminal's shortcut schema, or null. */
+  _terminalSettings(entry) {
+    try {
+      const source = Gio.SettingsSchemaSource.get_default();
+      const schema = source.lookup(entry.schema, /* recursive */ true);
+      if (!schema || !schema.has_key(entry.key)) return null;
+      return new Gio.Settings({ schema_id: entry.schema });
+    } catch (e) {
+      this._log(`Cannot open settings for ${entry.label}: ${e.message}`);
+      return null;
+    }
+  }
+
+  _restoreSavedShortcuts() {
+    if (!this._savedShortcuts) return;
+    for (const [mapKey, value] of this._savedShortcuts) {
+      const sep = mapKey.lastIndexOf(':');
+      const schema = mapKey.slice(0, sep);
+      const key = mapKey.slice(sep + 1);
+      try {
+        new Gio.Settings({ schema_id: schema }).set_string(key, value);
+      } catch (e) {
+        this._logDirect(`Failed to restore ${schema} ${key}: ${e.message}`);
+      }
+    }
+    this._savedShortcuts.clear();
+    this._savedShortcuts = null;
+  }
+
+  /** Enable-time diagnostic: note whether any supported terminal is installed. */
+  _probeInstalledTerminals() {
+    const source = Gio.SettingsSchemaSource.get_default();
+    const hasGnomeTerminal = !!source.lookup('org.gnome.Terminal.Legacy.Keybindings', true);
+    const hasPtyxis = !!source.lookup('org.gnome.Ptyxis.Shortcuts', true);
+    this._log(`Installed terminals — GNOME Terminal: ${hasGnomeTerminal}, Ptyxis: ${hasPtyxis}.`);
+    if (!hasGnomeTerminal && !hasPtyxis) {
+      this._notify(
+        _('No supported terminal found'),
+        _('Install GNOME Terminal or Ptyxis to use the tab-detach shortcut.'));
+    }
+  }
+
+  // ── Logging / notifications ──────────────────────────────────────────────────
+
+  _notify(title, body) {
+    try {
+      Main.notify(title, body);
+    } catch (e) {
+      this._logDirect(`notify failed: ${e.message}`);
+    }
+  }
+
+  /** Verbose log, gated on the debug-logging setting. */
+  _log(message) {
+    if (this._settings?.get_boolean('debug-logging'))
+      console.debug(`[TerminalTabToWindow] ${message}`);
+  }
+
+  /** Always-on log, for lifecycle/errors that must appear regardless of setting. */
+  _logDirect(message) {
+    console.debug(`[TerminalTabToWindow] ${message}`);
   }
 }
