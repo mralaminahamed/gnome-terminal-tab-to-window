@@ -14,6 +14,7 @@ set -euo pipefail
 PO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(dirname "$PO_DIR")"
 
+# Every source file containing translatable _()/C_()/ngettext() strings.
 xgettext --from-code=UTF-8 \
     --language=JavaScript \
     --keyword=_ --keyword=C_:1c,2 --keyword=ngettext:1,2 \
@@ -22,7 +23,9 @@ xgettext --from-code=UTF-8 \
     --copyright-holder="Al Amin Ahamed" \
     --msgid-bugs-address="mrabir.ahamed@gmail.com" \
     -o "$PO_DIR/terminal-tab-to-window.pot" \
-    "$SRC_DIR/prefs.js"
+    "$SRC_DIR/prefs.js" \
+    "$SRC_DIR/extension.js" \
+    "$SRC_DIR/extension-gnome42.js"
 
 echo "✓ Updated $PO_DIR/terminal-tab-to-window.pot"
 
