@@ -18,6 +18,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning is [S
 - `prefs.js` preferences dialog (GNOME 45+) to rebind the shortcut.
 - `version-name` in `metadata.json`.
 - `package.sh` to build clean extensions.gnome.org submission zips via `gnome-extensions pack` — `--gnome42` builds the separate legacy package.
+- Internationalization: `gettext-domain` in `metadata.json`, a `po/` translation template (`terminal-tab-to-window.pot`) and `po/update-pot.sh`; `package.sh` compiles `po/*.po` into the packaged `locale/`.
 
 ### Changed
 - Declared support for GNOME Shell 49 and 50 (`shell-version` now `45`–`50` for the ESM variant).

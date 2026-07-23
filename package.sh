@@ -34,10 +34,18 @@ command -v gnome-extensions >/dev/null 2>&1 || {
 
 mkdir -p "$OUT_DIR"
 
+# Compile translations into the zip's locale/ when any .po files exist.
+# (Only the GNOME 45+ variant ships translatable UI strings, in prefs.js.)
+PO_ARGS=()
+if compgen -G "$SCRIPT_DIR/po/*.po" > /dev/null; then
+    PO_ARGS+=(--podir="$SCRIPT_DIR/po")
+fi
+
 if [[ "$MODE" == "45plus" ]]; then
     echo "Packing GNOME 45+ (ESM) extension zip..."
     gnome-extensions pack "$SCRIPT_DIR" \
         --extra-source=LICENSE \
+        "${PO_ARGS[@]}" \
         --force \
         --out-dir="$OUT_DIR"
 

@@ -204,6 +204,9 @@ terminal-tab-to-window@mralaminahamed.github.com/
 ├── metadata.json           # UUID, versions, settings-schema
 ├── schemas/
 │   └── org.gnome.shell.extensions.terminal-tab-to-window.gschema.xml
+├── po/                     # Translation template + language .po files
+│   ├── terminal-tab-to-window.pot
+│   └── update-pot.sh
 ├── install.sh              # Installer (auto-detects GNOME version)
 ├── uninstall.sh            # Removes extension, restores terminal keybinding
 ├── package.sh              # Builds extensions.gnome.org zips
@@ -219,6 +222,20 @@ GNOME Terminal has **no extension or plugin API** in modern versions — the lib
 - Use `LD_PRELOAD` to inject a shared library — fragile and security-relevant.
 
 This GNOME Shell extension is the cleanest available alternative: it hooks into the compositor (where there *is* a stable extension API) and drives the terminal through its own keybinding infrastructure. For native drag-to-new-window support, [**Tilix**](https://gnunn1.github.io/tilix-web/) (`sudo apt install tilix`) is a good alternative.
+
+## Translations
+
+The GNOME 45+ preferences dialog is fully translatable (gettext domain `terminal-tab-to-window`). To add a language:
+
+```bash
+cd po
+./update-pot.sh                                              # refresh the template
+msginit --input=terminal-tab-to-window.pot --locale=fr --output=fr.po
+# translate fr.po, then rebuild:
+cd .. && ./package.sh                                        # compiles po/*.po into locale/
+```
+
+`package.sh` compiles every `po/*.po` into `locale/<lang>/LC_MESSAGES/` inside the submission zip automatically.
 
 ## Privacy
 
