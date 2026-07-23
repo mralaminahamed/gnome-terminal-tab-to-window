@@ -7,12 +7,12 @@
 [![Ubuntu 22.04–24.04](https://img.shields.io/badge/Ubuntu-22.04%E2%80%9324.04-E95420?style=flat-square&logo=ubuntu&logoColor=white)](https://ubuntu.com/)
 [![Session Wayland | X11](https://img.shields.io/badge/session-Wayland%20%7C%20X11-777?style=flat-square)](https://wiki.gnome.org/Initiatives/Wayland)
 
-A GNOME Shell extension that adds a global keyboard shortcut to detach the active **GNOME Terminal** tab into its own window — on both Wayland and X11.
+A GNOME Shell extension that adds a global keyboard shortcut to detach the active terminal tab into its own window — adaptively across **GNOME Terminal** and **Ptyxis**, on both Wayland and X11.
 
 </div>
 
 > [!NOTE]
-> GNOME Terminal has no plugin API, so this extension drives the terminal's own `detach-tab` action. On **enable** it sets GNOME Terminal's `detach-tab` keybinding to `Ctrl+Shift+Alt+D` (the previous value is saved and **restored on disable**), and when you press the global shortcut it injects that combination as a synthetic keystroke. Nothing leaves your machine.
+> Terminals have no plugin API, so this extension triggers each terminal's own detach action. **GNOME Terminal** is detached directly through its D-Bus window action — no keybinding is touched. **Ptyxis** exposes no such action, so the extension sets its `detach-tab` shortcut (saved and **restored on disable**) and injects it as a synthetic keystroke. Nothing leaves your machine.
 
 ## Quick Start
 
@@ -29,40 +29,53 @@ Open **GNOME Terminal** with at least two tabs and press **`Super+Shift+W`**. Th
 
 ## What It Does
 
-GNOME Terminal's tab context menu cannot be extended without patching C source, and its libpeas plugin system was removed years ago. The only clean, package-update-safe way to add "move tab to new window" behaviour is from **outside** the terminal — a GNOME Shell extension that intercepts a global shortcut and triggers the terminal's built-in detach action.
+Terminal tab context menus can't be extended without patching each app's source. The only clean, package-update-safe way to add "move tab to new window" behaviour is from **outside** the terminal — a GNOME Shell extension that intercepts a global shortcut and triggers whichever detach action the focused terminal exposes.
 
 Useful when you:
 
 - Split one terminal session into several windows across monitors
 - Want a keyboard-only equivalent of dragging a tab out
-- Prefer GNOME Terminal but miss Tilix-style tab detachment
+- Use GNOME Terminal or Ptyxis and miss Tilix-style tab detachment
+
+## Supported terminals
+
+| Terminal | Detach? | Mechanism |
+|----------|---------|-----------|
+| **GNOME Terminal** | ✅ | D-Bus window action `tab-detach` (`org.gtk.Actions`) — **no keybinding is changed**. Falls back to keystroke injection if D-Bus is unavailable. |
+| **Ptyxis** | ✅ | Sets `org.gnome.Ptyxis.Shortcuts` → `detach-tab` (saved/restored) and injects it. |
+| GNOME Console (kgx) | ⚠️ | Recognised, but has no accelerator, settable shortcut, or reachable action — you get an explanatory notification. |
+| Tilix | ⚠️ | Recognised, but detach is drag-only upstream — explanatory notification. |
+
+The extension picks the right mechanism from the focused window (GNOME Terminal by `WM_CLASS`, GTK4 terminals by application-id).
 
 ## How It Works
 
 ```mermaid
 flowchart TD
-    A["User presses Super+Shift+W"] --> B{"Focused window<br/>is GNOME Terminal?"}
-    B -->|No| C["Ignore — other apps unaffected"]
-    B -->|Yes| D["Wait 80 ms"]
-    D --> E{"Still focused<br/>on GNOME Terminal?"}
-    E -->|No| C
-    E -->|Yes| F["Clutter.VirtualInputDevice<br/>injects Ctrl+Shift+Alt+D"]
-    F --> G["GNOME Terminal runs its<br/>detach-tab action"]
-    G --> H["Active tab opens in a new window"]
+    A["User presses Super+Shift+W"] --> B{"Which terminal<br/>is focused?"}
+    B -->|"Not a terminal"| C["Ignore — other apps unaffected"]
+    B -->|"Console / Tilix"| N["Notify: detach not<br/>supported for this terminal"]
+    B -->|"GNOME Terminal"| D["org.gtk.Actions.Activate<br/>(tab-detach) over D-Bus"]
+    D -->|"succeeds"| H["Active tab opens<br/>in a new window"]
+    D -->|"D-Bus unavailable"| I
+    B -->|"Ptyxis"| I["Set + inject detach-tab shortcut<br/>(adaptive focus-retry)"]
+    I --> H
 ```
 
-1. On **enable**, the extension writes `Ctrl+Shift+Alt+D` into `org.gnome.Terminal.Legacy.Keybindings → detach-tab` so the terminal process responds to that combination.
-2. On the global shortcut, GNOME Shell confirms GNOME Terminal is focused, waits briefly, **re-checks focus**, then injects the internal combination through a `Clutter.VirtualInputDevice`. Because injection goes through the compositor, it works identically on Wayland and X11.
+- **GNOME Terminal** is detached by calling its exported D-Bus window action directly — no keybinding mutation, no injection, no timing guesswork.
+- **Ptyxis** has no D-Bus-reachable detach action, so the extension sets its `detach-tab` shortcut (reusing an existing user binding if present, otherwise setting `Ctrl+Shift+Alt+D` and restoring the old value on disable) and injects it via a `Clutter.VirtualInputDevice`. Injection re-checks focus and retries the wait so it fires exactly once, on both Wayland and X11.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| Global shortcut | Default `Super+Shift+W`, fires only when GNOME Terminal is focused |
+| Global shortcut | Default `Super+Shift+W`, fires only when a supported terminal is focused |
+| Adaptive | Detects the focused terminal and uses its best available detach mechanism |
+| Non-destructive | GNOME Terminal's keybinding is never touched; any mutated shortcut is restored on disable |
 | Configurable | Rebind the shortcut from the preferences dialog or via `gsettings` |
-| Wayland & X11 | Input injected through the compositor — no X11-only APIs |
+| Wayland & X11 | D-Bus and compositor-level injection — no X11-only APIs |
 | Focus guard | Re-checks the focused window right before injecting, so keys never reach another app |
-| Clean teardown | Removes its keybinding, cancels pending timers, and restores GNOME Terminal's original `detach-tab` value on disable |
+| Diagnostics | Optional verbose-logging toggle; actionable notifications for unsupported/missing terminals |
 | Two variants | ESM `extension.js` for GNOME 45–50; `extension-gnome42.js` for GNOME 42–44 |
 | No network | No telemetry, analytics, or outbound requests of any kind |
 
@@ -111,7 +124,7 @@ The installer:
 gnome-extensions prefs terminal-tab-to-window@mralaminahamed.github.com
 ```
 
-Or open the **GNOME Extensions** app and click the ⚙ icon. The dialog shows the current shortcut and lets you rebind it — click **Change…** and press the new combination (Backspace clears, Escape cancels).
+Or open the **GNOME Extensions** app and click the ⚙ icon. The dialog shows the current shortcut and lets you rebind it — click **Change…** and press the new combination (Backspace clears, Escape cancels). A **Behaviour** group offers a *Verbose logging* switch, and a **Supported terminals** group lists what can be detached.
 
 ### Command line
 
@@ -123,6 +136,10 @@ gsettings set org.gnome.shell.extensions.terminal-tab-to-window \
 # Reset to the default (Super+Shift+W)
 gsettings reset org.gnome.shell.extensions.terminal-tab-to-window \
   move-terminal-tab-shortcut
+
+# Turn on verbose logging for troubleshooting
+gsettings set org.gnome.shell.extensions.terminal-tab-to-window \
+  debug-logging true
 ```
 
 ## Verifying the Installation

@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning is [S
 
 ## [Unreleased]
 
+### Added
+- **Adaptive multi-terminal support** via a data-driven terminal registry:
+  - **GNOME Terminal** is now detached through its exported D-Bus window action `tab-detach` (`org.gtk.Actions`) — no keybinding is mutated at all — with keystroke injection as a fallback.
+  - **Ptyxis** is supported through its `org.gnome.Ptyxis.Shortcuts` → `detach-tab` shortcut plus injection.
+  - GNOME Console and Tilix are recognised but show an explanatory notification (no reachable detach action upstream).
+- Adaptive focus-retry injection (50/120/250 ms) that fires exactly once, replacing the fixed 80 ms delay.
+- Reuse of an existing user-set detach shortcut instead of overwriting it.
+- Enable-time terminal probe and actionable `Main.notify` diagnostics.
+- `debug-logging` GSettings toggle (and a preferences switch) for verbose logging.
+- Preferences: a **Behaviour** group and a **Supported terminals** note.
+
 ### Fixed
 - **Extension failed to enable:** `getSettings()` was called with no argument while `metadata.json` lacked a `settings-schema` key, so schema resolution threw in `enable()`. Added `settings-schema` to `metadata.json`.
 - **`gnome-extensions prefs` did nothing:** no `prefs.js` existed, so the documented preferences command failed and no ⚙ gear icon appeared. Added a `prefs.js` with an accelerator-capture UI.
