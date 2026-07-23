@@ -23,6 +23,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning is [S
 ### Changed
 - Declared support for GNOME Shell 49 and 50 (`shell-version` now `45`–`50` for the ESM variant).
 - Rewrote `README.md` (badges, feature tables, mermaid architecture, packaging and privacy sections).
+- Added a Screenshots section and `docs/screenshots/` (placeholder assets + `CAPTURE.md` recording guide).
 
 ## [1.0.0] — 2026-07-23
 

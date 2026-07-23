@@ -66,6 +66,20 @@ flowchart TD
 | Two variants | ESM `extension.js` for GNOME 45–50; `extension-gnome42.js` for GNOME 42–44 |
 | No network | No telemetry, analytics, or outbound requests of any kind |
 
+## Screenshots
+
+> [!NOTE]
+> The images below are placeholders. See [docs/screenshots/CAPTURE.md](docs/screenshots/CAPTURE.md) for the exact commands to record real captures (keep the same filenames).
+
+![The preferences dialog, showing the current shortcut with Change and Clear controls](docs/screenshots/prefs.png)
+
+<details>
+<summary>View the detach demo</summary>
+
+![Pressing Super+Shift+W detaches the active GNOME Terminal tab into its own window](docs/screenshots/demo.gif)
+
+</details>
+
 ## Installation
 
 ### Automatic (recommended)
@@ -207,6 +221,10 @@ terminal-tab-to-window@mralaminahamed.github.com/
 ├── po/                     # Translation template + language .po files
 │   ├── terminal-tab-to-window.pot
 │   └── update-pot.sh
+├── docs/screenshots/       # Listing assets (see CAPTURE.md)
+│   ├── prefs.png
+│   ├── demo.gif
+│   └── CAPTURE.md
 ├── install.sh              # Installer (auto-detects GNOME version)
 ├── uninstall.sh            # Removes extension, restores terminal keybinding
 ├── package.sh              # Builds extensions.gnome.org zips
