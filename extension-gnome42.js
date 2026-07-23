@@ -34,8 +34,10 @@ const INJECTION_DELAY_MS  = 80;
 
 // ── Module-level state (no class in the GNOME 42 API) ───────────────────────
 
-let _settings       = null;
-let _virtualKeyboard = null;
+let _settings            = null;
+let _virtualKeyboard     = null;
+let _pendingTimeouts     = null;  // Set of GLib source ids
+let _savedDetachShortcut = null;  // previous terminal detach-tab value
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -49,6 +51,9 @@ function enable() {
     _settings = ExtensionUtils.getSettings(
         'org.gnome.shell.extensions.terminal-tab-to-window'
     );
+    _virtualKeyboard = null;
+    _pendingTimeouts = new Set();
+    _savedDetachShortcut = null;
 
     _configureTerminalInternalShortcut();
 
@@ -66,6 +71,18 @@ function enable() {
 /** @returns {void} */
 function disable() {
     Main.wm.removeKeybinding('move-terminal-tab-shortcut');
+
+    // Cancel any pending injection timeouts scheduled but not yet fired.
+    if (_pendingTimeouts) {
+        for (const id of _pendingTimeouts)
+            GLib.Source.remove(id);
+        _pendingTimeouts.clear();
+    }
+    _pendingTimeouts = null;
+
+    // Restore GNOME Terminal's detach-tab keybinding to what it was before.
+    _restoreTerminalInternalShortcut();
+
     _virtualKeyboard = null;
     _settings        = null;
 
@@ -76,7 +93,8 @@ function disable() {
 
 /**
  * Writes Ctrl+Shift+Alt+D into GNOME Terminal's keybinding GSettings so the
- * terminal recognises it as the "detach-tab" action.
+ * terminal recognises it as the "detach-tab" action. Saves the prior value so
+ * disable() can restore it.
  *
  * @returns {void}
  */
@@ -98,6 +116,7 @@ function _configureTerminalInternalShortcut() {
         }
 
         const termSettings = new Gio.Settings({ schema_id: TERMINAL_KEYBINDING_SCHEMA });
+        _savedDetachShortcut = termSettings.get_string(TERMINAL_DETACH_ACTION_KEY);
         termSettings.set_string(TERMINAL_DETACH_ACTION_KEY, INTERNAL_SHORTCUT_GSETTINGS);
         log(`[TerminalTabToWindow] Set terminal internal shortcut → ${INTERNAL_SHORTCUT_GSETTINGS}`);
     } catch (e) {
@@ -106,30 +125,62 @@ function _configureTerminalInternalShortcut() {
 }
 
 /**
+ * Restores GNOME Terminal's detach-tab keybinding to the saved value.
+ * No-op if nothing was saved.
+ *
+ * @returns {void}
+ */
+function _restoreTerminalInternalShortcut() {
+    if (_savedDetachShortcut === null) return;
+    try {
+        const termSettings = new Gio.Settings({ schema_id: TERMINAL_KEYBINDING_SCHEMA });
+        termSettings.set_string(TERMINAL_DETACH_ACTION_KEY, _savedDetachShortcut);
+        log(`[TerminalTabToWindow] Restored terminal detach-tab → ${_savedDetachShortcut}`);
+    } catch (e) {
+        logError(e, '[TerminalTabToWindow] Error restoring terminal shortcut');
+    } finally {
+        _savedDetachShortcut = null;
+    }
+}
+
+/**
+ * Returns true when the currently focused window is a GNOME Terminal.
+ *
+ * @returns {boolean}
+ */
+function _isTerminalFocused() {
+    const focusedWindow = global.display.focus_window;
+    if (!focusedWindow) return false;
+    const wmClass = (focusedWindow.get_wm_class() || '').toLowerCase();
+    return TERMINAL_WM_CLASSES.some(c => wmClass.includes(c));
+}
+
+/**
  * Called by GNOME Shell when the user presses the global shortcut.
  *
  * @returns {void}
  */
 function _onGlobalShortcutActivated() {
-    const focusedWindow = global.display.focus_window;
-    if (!focusedWindow) return;
+    if (!_isTerminalFocused()) return;
 
-    const wmClass  = (focusedWindow.get_wm_class() || '').toLowerCase();
-    const isTerminal = TERMINAL_WM_CLASSES.some(c => wmClass.includes(c));
-    if (!isTerminal) return;
-
-    GLib.timeout_add(GLib.PRIORITY_DEFAULT, INJECTION_DELAY_MS, () => {
+    const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, INJECTION_DELAY_MS, () => {
+        if (_pendingTimeouts) _pendingTimeouts.delete(id);
         _injectDetachShortcut();
         return GLib.SOURCE_REMOVE;
     });
+    _pendingTimeouts.add(id);
 }
 
 /**
  * Injects Ctrl+Shift+Alt+D via Clutter VirtualInputDevice (Wayland-safe).
+ * Re-checks focus first so keys are never delivered to another app if the
+ * user switched windows during the injection delay.
  *
  * @returns {void}
  */
 function _injectDetachShortcut() {
+    if (!_isTerminalFocused()) return;
+
     try {
         const seat = Clutter.get_default_backend().get_default_seat();
 

@@ -11,7 +11,8 @@
  *
  *  1. On enable(), it writes a low-conflict internal shortcut
  *     (Ctrl+Shift+Alt+D) into GNOME Terminal's own GSettings keybindings
- *     for the "detach-tab" action.
+ *     for the "detach-tab" action. The previous value is saved and restored
+ *     on disable().
  *
  *  2. When the user presses the global shortcut (Super+Shift+W) while
  *     GNOME Terminal is focused, the extension injects that internal
@@ -70,6 +71,8 @@ export default class TerminalTabToWindowExtension extends Extension {
   enable() {
     this._settings = this.getSettings();
     this._virtualKeyboard = null;
+    this._pendingTimeouts = new Set();
+    this._savedDetachShortcut = null; // previous terminal detach-tab value
 
     this._configureTerminalInternalShortcut();
 
@@ -81,7 +84,7 @@ export default class TerminalTabToWindowExtension extends Extension {
       () => this._onGlobalShortcutActivated(),
     );
 
-    console.log('[TerminalTabToWindow] Enabled — shortcut registered.');
+    console.debug('[TerminalTabToWindow] Enabled — shortcut registered.');
   }
 
   /**
@@ -90,10 +93,22 @@ export default class TerminalTabToWindowExtension extends Extension {
    */
   disable() {
     Main.wm.removeKeybinding('move-terminal-tab-shortcut');
+
+    // Cancel any pending injection timeouts scheduled but not yet fired.
+    if (this._pendingTimeouts) {
+      for (const id of this._pendingTimeouts)
+        GLib.Source.remove(id);
+      this._pendingTimeouts.clear();
+    }
+    this._pendingTimeouts = null;
+
+    // Restore GNOME Terminal's detach-tab keybinding to what it was before.
+    this._restoreTerminalInternalShortcut();
+
     this._virtualKeyboard = null;
     this._settings = null;
 
-    console.log('[TerminalTabToWindow] Disabled.');
+    console.debug('[TerminalTabToWindow] Disabled.');
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -101,7 +116,8 @@ export default class TerminalTabToWindowExtension extends Extension {
   /**
    * Writes the internal shortcut (Ctrl+Shift+Alt+D) into GNOME Terminal's
    * own GSettings so that the terminal application will recognise and act on
-   * it when the virtual keyboard injects it.
+   * it when the virtual keyboard injects it. Saves the prior value in
+   * this._savedDetachShortcut so disable() can restore it.
    *
    * Fails gracefully if the schema or key does not exist (older/newer
    * Terminal versions that renamed or removed the key).
@@ -122,11 +138,39 @@ export default class TerminalTabToWindowExtension extends Extension {
       }
 
       const termSettings = new Gio.Settings({ schema_id: TERMINAL_KEYBINDING_SCHEMA });
+      this._savedDetachShortcut = termSettings.get_string(TERMINAL_DETACH_ACTION_KEY);
       termSettings.set_string(TERMINAL_DETACH_ACTION_KEY, INTERNAL_SHORTCUT_GSETTINGS);
-      console.log(`[TerminalTabToWindow] Set terminal internal shortcut → ${INTERNAL_SHORTCUT_GSETTINGS}`);
+      console.debug(`[TerminalTabToWindow] Set terminal internal shortcut → ${INTERNAL_SHORTCUT_GSETTINGS}`);
     } catch (e) {
       console.error(`[TerminalTabToWindow] Error configuring terminal shortcut: ${e.message}`);
     }
+  }
+
+  /**
+   * Restores GNOME Terminal's detach-tab keybinding to the value captured in
+   * _configureTerminalInternalShortcut(). No-op if nothing was saved.
+   */
+  _restoreTerminalInternalShortcut() {
+    if (this._savedDetachShortcut === null) return;
+    try {
+      const termSettings = new Gio.Settings({ schema_id: TERMINAL_KEYBINDING_SCHEMA });
+      termSettings.set_string(TERMINAL_DETACH_ACTION_KEY, this._savedDetachShortcut);
+      console.debug(`[TerminalTabToWindow] Restored terminal detach-tab → ${this._savedDetachShortcut}`);
+    } catch (e) {
+      console.error(`[TerminalTabToWindow] Error restoring terminal shortcut: ${e.message}`);
+    } finally {
+      this._savedDetachShortcut = null;
+    }
+  }
+
+  /**
+   * Returns true when the currently focused window is a GNOME Terminal.
+   */
+  _isTerminalFocused() {
+    const focusedWindow = global.display.focus_window;
+    if (!focusedWindow) return false;
+    const wmClass = (focusedWindow.get_wm_class() ?? '').toLowerCase();
+    return TERMINAL_WM_CLASSES.some(c => wmClass.includes(c));
   }
 
   /**
@@ -134,31 +178,34 @@ export default class TerminalTabToWindowExtension extends Extension {
    * Guards against non-terminal windows before scheduling key injection.
    */
   _onGlobalShortcutActivated() {
-    const focusedWindow = global.display.focus_window;
-    if (!focusedWindow) return;
-
-    const wmClass = (focusedWindow.get_wm_class() ?? '').toLowerCase();
-    const isTerminal = TERMINAL_WM_CLASSES.some(c => wmClass.includes(c));
-
-    if (!isTerminal) {
+    if (!this._isTerminalFocused()) {
       // Silently ignore — the user pressed the shortcut in another app.
       return;
     }
 
     // Schedule injection after a short delay so GNOME Shell has finished
-    // processing the keybinding event before we inject new ones.
-    GLib.timeout_add(GLib.PRIORITY_DEFAULT, INJECTION_DELAY_MS, () => {
+    // processing the keybinding event before we inject new ones. The source
+    // id is tracked so disable() can cancel it if teardown happens first.
+    const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, INJECTION_DELAY_MS, () => {
+      this._pendingTimeouts?.delete(id);
       this._injectDetachShortcut();
       return GLib.SOURCE_REMOVE;
     });
+    this._pendingTimeouts.add(id);
   }
 
   /**
    * Injects Ctrl+Shift+Alt+D into the focused window via a Wayland-compatible
    * Clutter VirtualInputDevice.  The sequence: press all modifiers, press the
    * key, then release in reverse order.
+   *
+   * Re-checks focus immediately before injecting: the 80ms delay means the
+   * user could have switched windows since the shortcut fired, and we must
+   * not deliver synthetic keys to another application.
    */
   _injectDetachShortcut() {
+    if (!this._isTerminalFocused()) return;
+
     try {
       const seat = Clutter.get_default_backend().get_default_seat();
 

@@ -58,6 +58,11 @@ cp "$SCRIPT_DIR/$EXT_SRC" "$DEST/extension.js"
 cp "$SCRIPT_DIR/metadata.json" "$DEST/metadata.json"
 cp "$SCRIPT_DIR/schemas/"*.gschema.xml "$DEST/schemas/"
 
+# Preferences dialog (GNOME 45+ only; the GNOME 42 path is not shipped here)
+if [[ "$EXT_SRC" == "extension.js" && -f "$SCRIPT_DIR/prefs.js" ]]; then
+    cp "$SCRIPT_DIR/prefs.js" "$DEST/prefs.js"
+fi
+
 # Patch shell-version in metadata.json for the selected mode
 sed -i "s/\"shell-version\": \[.*\]/\"shell-version\": [$SHELL_VERSIONS]/" "$DEST/metadata.json"
 
