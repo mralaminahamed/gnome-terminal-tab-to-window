@@ -1,0 +1,8 @@
+{
+  "name": "Terminal Tab to New Window",
+  "description": "Adds a global keyboard shortcut (Super+Shift+W) to detach the active GNOME Terminal tab into its own window. Works on Wayland and X11.",
+  "uuid": "terminal-tab-to-window@mralaminahamed.github.com",
+  "version": 1,
+  "shell-version": ["45", "46", "47", "48"],
+  "url": "https://github.com/mralaminahamed/terminal-tab-to-window"
+}

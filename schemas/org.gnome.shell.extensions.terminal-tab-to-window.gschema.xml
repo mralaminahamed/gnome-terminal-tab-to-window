@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.terminal-tab-to-window"
+          path="/org/gnome/shell/extensions/terminal-tab-to-window/">
+
+    <key name="move-terminal-tab-shortcut" type="as">
+      <default>["&lt;Super&gt;&lt;Shift&gt;w"]</default>
+      <summary>Move terminal tab to new window</summary>
+      <description>
+        Global keyboard shortcut to detach the active GNOME Terminal tab into
+        its own window. Press while GNOME Terminal is the focused application.
+      </description>
+    </key>
+
+  </schema>
+</schemalist>
