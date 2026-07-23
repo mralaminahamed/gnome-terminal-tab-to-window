@@ -4,6 +4,9 @@ schemas/gschemas.compiled
 # EGO build output (gnome-extensions pack, via package.sh)
 dist/
 
+# Local design docs (Superpowers spec/plan) — kept on disk, not tracked
+docs/superpowers/
+
 # Editor / OS cruft
 *~
 *.swp
