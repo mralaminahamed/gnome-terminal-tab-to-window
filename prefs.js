@@ -14,6 +14,7 @@
 import Adw from 'gi://Adw';
 import Gtk from 'gi://Gtk';
 import Gdk from 'gi://Gdk';
+import Gio from 'gi://Gio';
 
 import { ExtensionPreferences, gettext as _ } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
@@ -30,7 +31,7 @@ export default class TerminalTabToWindowPreferences extends ExtensionPreferences
 
     const group = new Adw.PreferencesGroup({
       title: _('Global Keyboard Shortcut'),
-      description: _('Press this shortcut while GNOME Terminal is focused to detach the active tab into its own window.'),
+      description: _('Press this shortcut while a supported terminal is focused to detach the active tab into its own window.'),
     });
     page.add(group);
 
@@ -71,6 +72,39 @@ export default class TerminalTabToWindowPreferences extends ExtensionPreferences
     row.add_suffix(changeButton);
     row.add_suffix(clearButton);
     group.add(row);
+
+    // Behaviour group — verbose logging toggle.
+    const behaviourGroup = new Adw.PreferencesGroup({
+      title: _('Behaviour'),
+    });
+    page.add(behaviourGroup);
+
+    const debugRow = new Adw.SwitchRow({
+      title: _('Verbose logging'),
+      subtitle: _('Log detailed diagnostics to the GNOME Shell journal. Leave off for normal use.'),
+    });
+    settings.bind('debug-logging', debugRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+    behaviourGroup.add(debugRow);
+
+    // Supported terminals — read-only informational rows.
+    const terminalsGroup = new Adw.PreferencesGroup({
+      title: _('Supported terminals'),
+      description: _('Which terminals this shortcut can detach a tab from.'),
+    });
+    page.add(terminalsGroup);
+
+    terminalsGroup.add(new Adw.ActionRow({
+      title: _('GNOME Terminal'),
+      subtitle: _('Detached directly via its D-Bus action — no keybinding is changed.'),
+    }));
+    terminalsGroup.add(new Adw.ActionRow({
+      title: _('Ptyxis'),
+      subtitle: _('Detached by setting and injecting its detach-tab shortcut.'),
+    }));
+    terminalsGroup.add(new Adw.ActionRow({
+      title: _('GNOME Console, Tilix'),
+      subtitle: _('Recognised, but they expose no way to detach a tab from outside the app.'),
+    }));
 
     window.add(page);
   }
