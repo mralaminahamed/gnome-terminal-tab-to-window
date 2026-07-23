@@ -37,7 +37,7 @@ fi
 
 if [[ "$GNOME_VERSION" -ge 45 && "$FORCE_GNOME42" == false ]]; then
     EXT_SRC="extension.js"
-    SHELL_VERSIONS='"45", "46", "47", "48"'
+    SHELL_VERSIONS='"45", "46", "47", "48", "49", "50"'
     echo "Mode: GNOME 45+ (ES modules)"
 else
     EXT_SRC="extension-gnome42.js"

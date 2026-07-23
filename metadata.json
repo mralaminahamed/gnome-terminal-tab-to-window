@@ -4,7 +4,7 @@
   "uuid": "terminal-tab-to-window@mralaminahamed.github.com",
   "version": 1,
   "version-name": "1.0.0",
-  "shell-version": ["45", "46", "47", "48"],
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
   "settings-schema": "org.gnome.shell.extensions.terminal-tab-to-window",
   "url": "https://github.com/mralaminahamed/gnome-terminal-tab-to-window"
 }
